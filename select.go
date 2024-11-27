@@ -5,10 +5,73 @@
 package gorp
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"reflect"
 )
+
+// TypedSelector provides type-safe select operations
+type TypedSelector[T any] struct {
+	dbmap *DbMap
+	exec  SqlExecutor
+	hooks *HookMap[T]
+	ctx   context.Context
+}
+
+// NewTypedSelector creates a new TypedSelector for type T
+func NewTypedSelector[T any](ctx context.Context, dbmap *DbMap, exec SqlExecutor) *TypedSelector[T] {
+	return &TypedSelector[T]{
+		dbmap: dbmap,
+		exec:  exec,
+		hooks: NewHookMap[T](),
+		ctx:   ctx,
+	}
+}
+
+// WithHooks sets the hooks for this selector
+func (s *TypedSelector[T]) WithHooks(hooks *HookMap[T]) *TypedSelector[T] {
+	s.hooks = hooks
+	return s
+}
+
+// SelectOne executes a type-safe select for a single row
+func (s *TypedSelector[T]) SelectOne(query string, args ...interface{}) (*T, error) {
+	var result T
+	err := SelectOne(s.dbmap, s.exec, &result, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Execute after select hooks
+	if s.hooks != nil {
+		if err := s.hooks.ExecuteHooks(s.ctx, AfterSelect, s.exec); err != nil {
+			return nil, &HookError{
+				Point:  AfterSelect,
+				Entity: result,
+				Err:    err,
+			}
+		}
+	}
+
+	return &result, nil
+}
+
+// Select executes a type-safe select for multiple rows
+func (s *TypedSelector[T]) Select(query string, args ...interface{}) ([]T, error) {
+	var result T
+	list, err := hookedselect(s.dbmap, s.exec, &result, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	typedList := make([]T, len(list))
+	for i, v := range list {
+		typedList[i] = *v.(*T)
+	}
+
+	return typedList, nil
+}
 
 // SelectInt executes the given query, which should be a SELECT statement for a single
 // integer column, and returns the value of the first row returned.  If no rows are
@@ -48,7 +111,7 @@ func SelectFloat(e SqlExecutor, query string, args ...interface{}) (float64, err
 
 // SelectNullFloat executes the given query, which should be a SELECT statement for a single
 // float column, and returns the value of the first row returned. If no rows are
-// found, the empty sql.NullInt64 value is returned.
+// found, the empty sql.NullFloat64 value is returned.
 func SelectNullFloat(e SqlExecutor, query string, args ...interface{}) (sql.NullFloat64, error) {
 	var h sql.NullFloat64
 	err := selectVal(e, &h, query, args...)
@@ -70,12 +133,35 @@ func SelectStr(e SqlExecutor, query string, args ...interface{}) (string, error)
 	return h, nil
 }
 
-// SelectNullStr executes the given query, which should be a SELECT
-// statement for a single char/varchar column, and returns the value
-// of the first row returned.  If no rows are found, the empty
-// sql.NullString is returned.
+// SelectNullStr executes the given query, which should be a SELECT statement for a single
+// char/varchar column, and returns the value of the first row returned.  If no rows are
+// found, the empty sql.NullString is returned.
 func SelectNullStr(e SqlExecutor, query string, args ...interface{}) (sql.NullString, error) {
 	var h sql.NullString
+	err := selectVal(e, &h, query, args...)
+	if err != nil && err != sql.ErrNoRows {
+		return h, err
+	}
+	return h, nil
+}
+
+// SelectBool executes the given query, which should be a SELECT statement for a single
+// boolean column, and returns the value of the first row returned.  If no rows are
+// found, false is returned.
+func SelectBool(e SqlExecutor, query string, args ...interface{}) (bool, error) {
+	var h bool
+	err := selectVal(e, &h, query, args...)
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+	return h, nil
+}
+
+// SelectNullBool executes the given query, which should be a SELECT statement for a single
+// boolean column, and returns the value of the first row returned.  If no rows are
+// found, the empty sql.NullBool is returned.
+func SelectNullBool(e SqlExecutor, query string, args ...interface{}) (sql.NullBool, error) {
+	var h sql.NullBool
 	err := selectVal(e, &h, query, args...)
 	if err != nil && err != sql.ErrNoRows {
 		return h, err
@@ -86,16 +172,15 @@ func SelectNullStr(e SqlExecutor, query string, args ...interface{}) (sql.NullSt
 // SelectOne executes the given query (which should be a SELECT statement)
 // and binds the result to holder, which must be a pointer.
 //
-// If no row is found, an error (sql.ErrNoRows specifically) will be returned
+// # If no row is found, an error (sql.ErrNoRows specifically) will be returned
 //
 // If more than one row is found, an error will be returned.
-//
 func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args ...interface{}) error {
 	t := reflect.TypeOf(holder)
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	} else {
-		return fmt.Errorf("gorp: SelectOne holder must be a pointer, but got: %t", holder)
+		return fmt.Errorf("gorp: SelectOne holder must be a pointer, but got: %T", holder)
 	}
 
 	// Handle pointer to pointer
@@ -110,7 +195,7 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 
 		list, err := hookedselect(m, e, holder, query, args...)
 		if err != nil {
-			if !NonFatalError(err) { // FIXME: double negative, rename NonFatalError to FatalError
+			if !NonFatalError(err) {
 				return err
 			}
 			nonFatalErr = err
@@ -121,8 +206,8 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 			dest = dest.Elem()
 		}
 
-		if list != nil && len(list) > 0 { // FIXME: invert if/else
-			// check for multiple rows
+		if list != nil && len(list) > 0 {
+			// Check for multiple rows
 			if len(list) > 1 {
 				return fmt.Errorf("gorp: multiple rows returned for: %s - %v", query, args)
 			}
@@ -132,11 +217,11 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 				dest.Set(reflect.New(t))
 			}
 
-			// only one row found
+			// Only one row found
 			src := reflect.ValueOf(list[0])
 			dest.Elem().Set(src.Elem())
 		} else {
-			// No rows found, return a proper error.
+			// No rows found, return a proper error
 			return sql.ErrNoRows
 		}
 
@@ -146,6 +231,8 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 	return selectVal(e, holder, query, args...)
 }
 
+// selectVal executes the given query (which should be a SELECT statement)
+// and binds the result to holder
 func selectVal(e SqlExecutor, holder interface{}, query string, args ...interface{}) error {
 	if len(args) == 1 {
 		switch m := e.(type) {
@@ -171,6 +258,8 @@ func selectVal(e SqlExecutor, holder interface{}, query string, args ...interfac
 	return rows.Scan(holder)
 }
 
+// hookedselect executes the given query (which should be a SELECT statement)
+// and returns the results
 func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	args ...interface{}) ([]interface{}, error) {
 
@@ -184,30 +273,30 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		nonFatalErr = err
 	}
 
-	// Determine where the results are: written to i, or returned in list
-	if t, _ := toSliceType(i); t == nil {
+	// Execute after select hooks
+	if len(list) > 0 {
 		for _, v := range list {
 			if v, ok := v.(HasPostGet); ok {
-				err := v.PostGet(exec)
-				if err != nil {
-					return nil, err
+				ctx := context.Background()
+				if execCtx, ok := exec.(hasContext); ok {
+					ctx = execCtx.Context()
 				}
-			}
-		}
-	} else {
-		resultsValue := reflect.Indirect(reflect.ValueOf(i))
-		for i := 0; i < resultsValue.Len(); i++ {
-			if v, ok := resultsValue.Index(i).Interface().(HasPostGet); ok {
-				err := v.PostGet(exec)
-				if err != nil {
-					return nil, err
+				if err := v.PostGet(ctx, exec); err != nil {
+					return nil, &HookError{
+						Point:  AfterSelect,
+						Entity: v,
+						Err:    err,
+					}
 				}
 			}
 		}
 	}
+
 	return list, nonFatalErr
 }
 
+// rawselect executes the given query (which should be a SELECT statement)
+// and returns the results
 func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	args ...interface{}) ([]interface{}, error) {
 	var (
@@ -356,4 +445,10 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	}
 
 	return list, nonFatalErr
+}
+
+// hasContext is an interface that is implemented by the context.Context and
+// context.Value objects
+type hasContext interface {
+	Context() context.Context
 }

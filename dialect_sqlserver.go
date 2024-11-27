@@ -8,22 +8,32 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 )
 
 // Implementation of Dialect for Microsoft SQL Server databases.
 // Use gorp.SqlServerDialect{"2005"} for legacy datatypes.
 // Tested with driver: github.com/denisenkom/go-mssqldb
-
 type SqlServerDialect struct {
-
 	// If set to "2005" legacy datatypes will be used
 	Version string
 }
 
-func (d SqlServerDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bool) string {
+// Type returns the dialect type
+func (d SqlServerDialect) Type() DialectType {
+	return SQLServer
+}
+
+// QuerySuffix adds a Suffix to any query, usually ";"
+func (d SqlServerDialect) QuerySuffix() string { return ";" }
+
+// ToSqlType returns the SQL column type to use when creating a
+// table of the given Go Type. maxsize can be used to switch based on
+// size. For example, in SQL Server []byte maps to varbinary
+func (d SqlServerDialect) ToSqlType(val reflect.Type, opts ColumnOptions) string {
 	switch val.Kind() {
 	case reflect.Ptr:
-		return d.ToSqlType(val.Elem(), maxsize, isAutoIncr)
+		return d.ToSqlType(val.Elem(), opts)
 	case reflect.Bool:
 		return "bit"
 	case reflect.Int8:
@@ -66,34 +76,57 @@ func (d SqlServerDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bo
 		return "datetime2"
 	}
 
-	if maxsize < 1 {
+	if opts.MaxSize < 1 {
 		if d.Version == "2005" {
-			maxsize = 255
-		} else {
-			return fmt.Sprintf("nvarchar(max)")
+			return fmt.Sprintf("nvarchar(%d)", 255)
 		}
+		return "nvarchar(max)"
 	}
-	return fmt.Sprintf("nvarchar(%d)", maxsize)
+	return fmt.Sprintf("nvarchar(%d)", opts.MaxSize)
 }
 
-// Returns auto_increment
+// Returns "identity(0,1)"
 func (d SqlServerDialect) AutoIncrStr() string {
 	return "identity(0,1)"
 }
 
-// Empty string removes autoincrement columns from the INSERT statements.
+// Returns empty string since SQL Server removes autoincrement columns from INSERT statements
 func (d SqlServerDialect) AutoIncrBindValue() string {
 	return ""
 }
 
+// Returns empty string
 func (d SqlServerDialect) AutoIncrInsertSuffix(col *ColumnMap) string {
 	return ""
 }
 
-func (d SqlServerDialect) CreateTableSuffix() string { return ";" }
+// Returns ";"
+func (d SqlServerDialect) CreateTableSuffix() string {
+	return ";"
+}
 
+// Returns empty string
+func (d SqlServerDialect) CreateIndexSuffix() string {
+	return ""
+}
+
+// Returns empty string
+func (d SqlServerDialect) DropIndexSuffix() string {
+	return ""
+}
+
+// Returns "truncate table"
 func (d SqlServerDialect) TruncateClause() string {
 	return "truncate table"
+}
+
+// Returns waitfor delay 'time'
+func (d SqlServerDialect) SleepClause(s time.Duration) string {
+	return fmt.Sprintf("waitfor delay '%d:%02d:%02d.%03d'",
+		int(s.Hours()),
+		int(s.Minutes())%60,
+		int(s.Seconds())%60,
+		int(s.Milliseconds())%1000)
 }
 
 // Returns "?"
@@ -101,14 +134,17 @@ func (d SqlServerDialect) BindVar(i int) string {
 	return "?"
 }
 
+// Handles auto-increment values for SQL Server
 func (d SqlServerDialect) InsertAutoIncr(exec SqlExecutor, insertSql string, params ...interface{}) (int64, error) {
 	return standardInsertAutoIncr(exec, insertSql, params...)
 }
 
+// Returns quoted field name with SQL Server-style escaping
 func (d SqlServerDialect) QuoteField(f string) string {
 	return "[" + strings.Replace(f, "]", "]]", -1) + "]"
 }
 
+// Returns quoted table name with schema support
 func (d SqlServerDialect) QuotedTableForQuery(schema string, table string) string {
 	if strings.TrimSpace(schema) == "" {
 		return d.QuoteField(table)
@@ -116,30 +152,27 @@ func (d SqlServerDialect) QuotedTableForQuery(schema string, table string) strin
 	return d.QuoteField(schema) + "." + d.QuoteField(table)
 }
 
-func (d SqlServerDialect) QuerySuffix() string { return ";" }
-
+// Returns SQL Server-specific schema existence check
 func (d SqlServerDialect) IfSchemaNotExists(command, schema string) string {
-	s := fmt.Sprintf("if schema_id(N'%s') is null %s", schema, command)
-	return s
+	return fmt.Sprintf("if schema_id(N'%s') is null %s", schema, command)
 }
 
+// Returns SQL Server-specific table existence check
 func (d SqlServerDialect) IfTableExists(command, schema, table string) string {
 	var schema_clause string
 	if strings.TrimSpace(schema) != "" {
 		schema_clause = fmt.Sprintf("%s.", d.QuoteField(schema))
 	}
-	s := fmt.Sprintf("if object_id('%s%s') is not null %s", schema_clause, d.QuoteField(table), command)
-	return s
+	return fmt.Sprintf("if object_id('%s%s') is not null %s",
+		schema_clause, d.QuoteField(table), command)
 }
 
+// Returns SQL Server-specific table non-existence check
 func (d SqlServerDialect) IfTableNotExists(command, schema, table string) string {
 	var schema_clause string
 	if strings.TrimSpace(schema) != "" {
 		schema_clause = fmt.Sprintf("%s.", schema)
 	}
-	s := fmt.Sprintf("if object_id('%s%s') is null %s", schema_clause, table, command)
-	return s
+	return fmt.Sprintf("if object_id('%s%s') is null %s",
+		schema_clause, table, command)
 }
-
-func (d SqlServerDialect) CreateIndexSuffix() string { return "" }
-func (d SqlServerDialect) DropIndexSuffix() string   { return "" }

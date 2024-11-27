@@ -9,35 +9,82 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"sync/atomic"
 )
 
-// CustomScanner binds a database column value to a Go type
+// BindingCache is a thread-safe cache for binding plans
+type BindingCache struct {
+	cache sync.Map // map[reflect.Type]*bindPlan
+}
+
+// Get returns a cached binding plan or creates a new one
+func (c *BindingCache) Get(key reflect.Type, creator func() *bindPlan) *bindPlan {
+	if plan, ok := c.cache.Load(key); ok {
+		return plan.(*bindPlan)
+	}
+	plan := creator()
+	actual, _ := c.cache.LoadOrStore(key, plan)
+	return actual.(*bindPlan)
+}
+
+// CustomScanner binds a database column value to a Go type.
+// It provides type-safe scanning of database values into Go types.
+//
+// Example:
+//
+//	type JSONField struct {
+//	    Data map[string]interface{}
+//	}
+//
+//	scanner := &CustomScanner{
+//	    Holder: &[]byte{},
+//	    Target: &field.Data,
+//	    Binder: func(holder, target interface{}) error {
+//	        b := holder.(*[]byte)
+//	        return json.Unmarshal(*b, target)
+//	    },
+//	}
 type CustomScanner struct {
 	// After a row is scanned, Holder will contain the value from the database column.
 	// Initialize the CustomScanner with the concrete Go type you wish the database
 	// driver to scan the raw column into.
 	Holder interface{}
+
 	// Target typically holds a pointer to the target struct field to bind the Holder
 	// value to.
 	Target interface{}
+
 	// Binder is a custom function that converts the holder value to the target type
-	// and sets target accordingly.  This function should return error if a problem
+	// and sets target accordingly. This function should return error if a problem
 	// occurs converting the holder to the target.
 	Binder func(holder interface{}, target interface{}) error
 }
 
-// Used to filter columns when selectively updating
+// ColumnFilter is used to filter columns when selectively updating.
+// Return true to include the column in the update.
+//
+// Example:
+//
+//	// Only update non-empty string columns
+//	filter := func(col *ColumnMap) bool {
+//	    if v, ok := col.value.(string); ok {
+//	        return v != ""
+//	    }
+//	    return true
+//	}
 type ColumnFilter func(*ColumnMap) bool
 
+// acceptAllFilter is the default filter that includes all columns
 func acceptAllFilter(col *ColumnMap) bool {
 	return true
 }
 
 // Bind is called automatically by gorp after Scan()
-func (me CustomScanner) Bind() error {
-	return me.Binder(me.Holder, me.Target)
+func (cs CustomScanner) Bind() error {
+	return cs.Binder(cs.Holder, cs.Target)
 }
 
+// bindPlan represents a cached query plan for a specific operation
 type bindPlan struct {
 	query             string
 	argFields         []string
@@ -46,51 +93,24 @@ type bindPlan struct {
 	autoIncrIdx       int
 	autoIncrFieldName string
 	once              sync.Once
+	prepared          atomic.Bool // Track if the plan has been prepared
 }
 
-func (plan *bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) (bindInstance, error) {
-	bi := bindInstance{query: plan.query, autoIncrIdx: plan.autoIncrIdx, autoIncrFieldName: plan.autoIncrFieldName, versField: plan.versField}
-	if plan.versField != "" {
-		bi.existingVersion = elem.FieldByName(plan.versField).Int()
-	}
-
-	var err error
-
-	for i := 0; i < len(plan.argFields); i++ {
-		k := plan.argFields[i]
-		if k == versFieldConst {
-			newVer := bi.existingVersion + 1
-			bi.args = append(bi.args, newVer)
-			if bi.existingVersion == 0 {
-				elem.FieldByName(plan.versField).SetInt(int64(newVer))
-			}
-		} else {
-			val := elem.FieldByName(k).Interface()
-			if conv != nil {
-				val, err = conv.ToDb(val)
-				if err != nil {
-					return bindInstance{}, err
-				}
-			}
-			bi.args = append(bi.args, val)
-		}
-	}
-
-	for i := 0; i < len(plan.keyFields); i++ {
-		k := plan.keyFields[i]
-		val := elem.FieldByName(k).Interface()
-		if conv != nil {
-			val, err = conv.ToDb(val)
-			if err != nil {
-				return bindInstance{}, err
-			}
-		}
-		bi.keys = append(bi.keys, val)
-	}
-
-	return bi, nil
+// TypedBindPlan provides type-safe binding operations
+type TypedBindPlan[T any] struct {
+	*bindPlan
+	conv TypeConverter
 }
 
+// NewTypedBindPlan creates a new type-safe binding plan
+func NewTypedBindPlan[T any](plan *bindPlan, conv TypeConverter) *TypedBindPlan[T] {
+	return &TypedBindPlan[T]{
+		bindPlan: plan,
+		conv:     conv,
+	}
+}
+
+// bindInstance represents a single execution of a bind plan
 type bindInstance struct {
 	query             string
 	args              []interface{}
@@ -101,6 +121,83 @@ type bindInstance struct {
 	autoIncrFieldName string
 }
 
+// createBindInstance creates a new bind instance from the plan
+func (plan *bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) (bindInstance, error) {
+	bi := bindInstance{
+		query:             plan.query,
+		autoIncrIdx:       plan.autoIncrIdx,
+		autoIncrFieldName: plan.autoIncrFieldName,
+		versField:         plan.versField,
+	}
+
+	if plan.versField != "" {
+		bi.existingVersion = elem.FieldByName(plan.versField).Int()
+	}
+
+	// Pre-allocate slices to avoid reallocations
+	bi.args = make([]interface{}, 0, len(plan.argFields))
+	bi.keys = make([]interface{}, 0, len(plan.keyFields))
+
+	// Process argument fields
+	if err := plan.processArgFields(elem, conv, &bi); err != nil {
+		return bindInstance{}, err
+	}
+
+	// Process key fields
+	if err := plan.processKeyFields(elem, conv, &bi); err != nil {
+		return bindInstance{}, err
+	}
+
+	return bi, nil
+}
+
+// processArgFields processes argument fields for binding
+func (plan *bindPlan) processArgFields(elem reflect.Value, conv TypeConverter, bi *bindInstance) error {
+	for _, field := range plan.argFields {
+		if field == versFieldConst {
+			newVer := bi.existingVersion + 1
+			bi.args = append(bi.args, newVer)
+			if bi.existingVersion == 0 {
+				elem.FieldByName(plan.versField).SetInt(int64(newVer))
+			}
+			continue
+		}
+
+		val := elem.FieldByName(field).Interface()
+		if conv != nil {
+			var err error
+			val, err = conv.ToDb(val)
+			if err != nil {
+				return fmt.Errorf("error converting field %s: %w", field, err)
+			}
+		}
+		bi.args = append(bi.args, val)
+	}
+	return nil
+}
+
+// processKeyFields processes key fields for binding
+func (plan *bindPlan) processKeyFields(elem reflect.Value, conv TypeConverter, bi *bindInstance) error {
+	for _, field := range plan.keyFields {
+		val := elem.FieldByName(field).Interface()
+		if conv != nil {
+			var err error
+			val, err = conv.ToDb(val)
+			if err != nil {
+				return fmt.Errorf("error converting key field %s: %w", field, err)
+			}
+		}
+		bi.keys = append(bi.keys, val)
+	}
+	return nil
+}
+
+// CreateTypedInstance creates a type-safe bind instance
+func (plan *TypedBindPlan[T]) CreateTypedInstance(elem T) (bindInstance, error) {
+	return plan.createBindInstance(reflect.ValueOf(elem), plan.conv)
+}
+
+// bindInsert creates a bind instance for an insert
 func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
 	plan := &t.insertPlan
 	plan.once.Do(func() {
@@ -161,6 +258,7 @@ func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
 	return plan.createBindInstance(elem, t.dbmap.TypeConverter)
 }
 
+// bindUpdate creates a bind instance for an update
 func (t *TableMap) bindUpdate(elem reflect.Value, colFilter ColumnFilter) (bindInstance, error) {
 	if colFilter == nil {
 		colFilter = acceptAllFilter
@@ -221,6 +319,7 @@ func (t *TableMap) bindUpdate(elem reflect.Value, colFilter ColumnFilter) (bindI
 	return plan.createBindInstance(elem, t.dbmap.TypeConverter)
 }
 
+// bindDelete creates a bind instance for a delete
 func (t *TableMap) bindDelete(elem reflect.Value) (bindInstance, error) {
 	plan := &t.deletePlan
 	plan.once.Do(func() {
@@ -265,6 +364,7 @@ func (t *TableMap) bindDelete(elem reflect.Value) (bindInstance, error) {
 	return plan.createBindInstance(elem, t.dbmap.TypeConverter)
 }
 
+// bindGet creates a bind instance for a get
 func (t *TableMap) bindGet() *bindPlan {
 	plan := &t.getPlan
 	plan.once.Do(func() {

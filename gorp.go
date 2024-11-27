@@ -13,31 +13,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
-
-// OracleString (empty string is null)
-// TODO: move to dialect/oracle?, rename to String?
-type OracleString struct {
-	sql.NullString
-}
-
-// Scan implements the Scanner interface.
-func (os *OracleString) Scan(value interface{}) error {
-	if value == nil {
-		os.String, os.Valid = "", false
-		return nil
-	}
-	os.Valid = true
-	return os.NullString.Scan(value)
-}
-
-// Value implements the driver Valuer interface.
-func (os OracleString) Value() (driver.Value, error) {
-	if !os.Valid || os.String == "" {
-		return nil, nil
-	}
-	return os.String, nil
-}
 
 // SqlTyper is a type that returns its database type.  Most of the
 // time, the type can just use "database/sql/driver".Valuer; but when
@@ -86,11 +64,10 @@ type TypeConverter interface {
 // SqlExecutor exposes gorp operations that can be run from Pre/Post
 // hooks.  This hides whether the current operation that triggered the
 // hook is in a transaction.
-//
-// See the DbMap function docs for each of the functions below for more
-// information.
 type SqlExecutor interface {
 	WithContext(ctx context.Context) SqlExecutor
+
+	// Legacy gorp methods
 	Get(i interface{}, keys ...interface{}) (interface{}, error)
 	Insert(list ...interface{}) error
 	Update(list ...interface{}) (int64, error)
@@ -103,9 +80,29 @@ type SqlExecutor interface {
 	SelectNullFloat(query string, args ...interface{}) (sql.NullFloat64, error)
 	SelectStr(query string, args ...interface{}) (string, error)
 	SelectNullStr(query string, args ...interface{}) (sql.NullString, error)
+	SelectBool(query string, args ...interface{}) (bool, error)
+	SelectNullBool(query string, args ...interface{}) (sql.NullBool, error)
 	SelectOne(holder interface{}, query string, args ...interface{}) error
+
+	// Standard sql query methods
 	Query(query string, args ...interface{}) (*sql.Rows, error)
 	QueryRow(query string, args ...interface{}) *sql.Row
+
+	// sqlx enhanced methods
+	Queryx(query string, args ...interface{}) (*sqlx.Rows, error)
+	QueryRowx(query string, args ...interface{}) *sqlx.Row
+	MustExec(query string, args ...interface{}) sql.Result
+
+	// sqlx Get/Select methods
+	Getx(dest interface{}, query string, args ...interface{}) error
+	Selectx(dest interface{}, query string, args ...interface{}) error
+
+	// sqlx named query methods
+	NamedExec(query string, arg interface{}) (sql.Result, error)
+	NamedQuery(query string, arg interface{}) (*sqlx.Rows, error)
+
+	// sqlx prepared statements
+	PreparexNamed(query string) (*sqlx.NamedStmt, error)
 }
 
 // DynamicTable allows the users of gorp to dynamically
@@ -120,6 +117,8 @@ type DynamicTable interface {
 // interface.
 var _, _ SqlExecutor = &DbMap{}, &Transaction{}
 
+// argValue returns the underlying value for driver.Valuer types, or the original value if not a Valuer.
+// This is used to properly handle nil values and custom database types.
 func argValue(a interface{}) interface{} {
 	v, ok := a.(driver.Valuer)
 	if !ok {
@@ -136,6 +135,8 @@ func argValue(a interface{}) interface{} {
 	return ret
 }
 
+// argsString formats a slice of arguments into a string for logging purposes.
+// It handles special formatting for strings and provides positional references.
 func argsString(args ...interface{}) string {
 	var margs string
 	for i, a := range args {
@@ -166,6 +167,7 @@ func maybeExpandNamedQueryAndExec(e SqlExecutor, query string, args ...interface
 	return exec(e, query, args...)
 }
 
+// extractDbMap retrieves the underlying DbMap from either a DbMap or Transaction executor.
 func extractDbMap(e SqlExecutor) *DbMap {
 	switch m := e.(type) {
 	case *DbMap:
@@ -176,9 +178,10 @@ func extractDbMap(e SqlExecutor) *DbMap {
 	return nil
 }
 
-// executor exposes the sql.DB and sql.Tx functions so that it can be used
+// executor exposes both sql.DB/sql.Tx and sqlx.DB/sqlx.Tx functions so that it can be used
 // on internal functions that need to be agnostic to the underlying object.
 type executor interface {
+	// Standard sql methods
 	Exec(query string, args ...interface{}) (sql.Result, error)
 	Prepare(query string) (*sql.Stmt, error)
 	QueryRow(query string, args ...interface{}) *sql.Row
@@ -187,6 +190,24 @@ type executor interface {
 	PrepareContext(ctx context.Context, query string) (*sql.Stmt, error)
 	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+
+	// sqlx variants
+	MustExec(query string, args ...interface{}) sql.Result
+	Preparex(query string) (*sqlx.Stmt, error)
+	QueryRowx(query string, args ...interface{}) *sqlx.Row
+	Queryx(query string, args ...interface{}) (*sqlx.Rows, error)
+	PreparexContext(ctx context.Context, query string) (*sqlx.Stmt, error)
+	QueryRowxContext(ctx context.Context, query string, args ...interface{}) *sqlx.Row
+	QueryxContext(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error)
+
+	// sqlx Get/Select methods
+	Get(dest interface{}, query string, args ...interface{}) error
+	Select(dest interface{}, query string, args ...interface{}) error
+
+	// sqlx named query methods
+	NamedExec(query string, arg interface{}) (sql.Result, error)
+	NamedQuery(query string, arg interface{}) (*sqlx.Rows, error)
+	PrepareNamed(query string) (*sqlx.NamedStmt, error)
 }
 
 func extractExecutorAndContext(e SqlExecutor) (executor, context.Context) {
@@ -256,6 +277,8 @@ func expandNamedQuery(m *DbMap, query string, keyGetter func(key string) reflect
 	}), args
 }
 
+// columnToFieldIndex returns a slice of index paths mapping database columns to struct fields.
+// It handles nested structs and embedded fields.
 func columnToFieldIndex(m *DbMap, t reflect.Type, name string, cols []string) ([][]int, error) {
 	colToFieldIndex := make([][]int, len(cols))
 
@@ -284,7 +307,7 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, name string, cols []string) ([
 				fieldName = field.Name
 			}
 			if tableMapped {
-				colMap := colMapOrNil(table, fieldName)
+				colMap := table.colMapOrNil(fieldName)
 				if colMap != nil {
 					fieldName = colMap.ColumnName
 				}
@@ -307,6 +330,8 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, name string, cols []string) ([
 	return colToFieldIndex, nil
 }
 
+// fieldByName finds a field by name in a struct value, supporting embedded fields.
+// Returns nil if the field is not found.
 func fieldByName(val reflect.Value, fieldName string) *reflect.Value {
 	// try to find field by exact match
 	f := val.FieldByName(fieldName)
@@ -368,6 +393,8 @@ type foundTable struct {
 	dynName *string
 }
 
+// tableFor returns the TableMap and table name for a given struct type.
+// It handles both static and dynamic table names.
 func tableFor(m *DbMap, t reflect.Type, i interface{}) (*foundTable, error) {
 	if dyn, isDynamic := i.(DynamicTable); isDynamic {
 		tableName := dyn.TableName()
@@ -387,9 +414,9 @@ func tableFor(m *DbMap, t reflect.Type, i interface{}) (*foundTable, error) {
 	return &foundTable{table: table}, nil
 }
 
-func get(m *DbMap, exec SqlExecutor, i interface{},
-	keys ...interface{}) (interface{}, error) {
-
+// get retrieves a single record from the database and loads it into the specified struct.
+// It returns an error if the record is not found or if there's an issue with the query.
+func get(m *DbMap, exec SqlExecutor, i interface{}, keys ...interface{}) (interface{}, error) {
 	t, err := toType(i)
 	if err != nil {
 		return nil, err
@@ -444,7 +471,7 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 	}
 
 	if v, ok := v.Interface().(HasPostGet); ok {
-		err := v.PostGet(exec)
+		err := v.PostGet(m.ctx, exec)
 		if err != nil {
 			return nil, err
 		}
@@ -453,6 +480,8 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 	return v.Interface(), nil
 }
 
+// delete removes one or more records from the database.
+// It executes pre/post delete hooks and returns the number of affected rows.
 func delete(m *DbMap, exec SqlExecutor, list ...interface{}) (int64, error) {
 	count := int64(0)
 	for _, ptr := range list {
@@ -463,7 +492,7 @@ func delete(m *DbMap, exec SqlExecutor, list ...interface{}) (int64, error) {
 
 		eval := elem.Addr().Interface()
 		if v, ok := eval.(HasPreDelete); ok {
-			err = v.PreDelete(exec)
+			err = v.PreDelete(m.ctx, exec)
 			if err != nil {
 				return -1, err
 			}
@@ -491,7 +520,7 @@ func delete(m *DbMap, exec SqlExecutor, list ...interface{}) (int64, error) {
 		count += rows
 
 		if v, ok := eval.(HasPostDelete); ok {
-			err := v.PostDelete(exec)
+			err := v.PostDelete(m.ctx, exec)
 			if err != nil {
 				return -1, err
 			}
@@ -501,6 +530,8 @@ func delete(m *DbMap, exec SqlExecutor, list ...interface{}) (int64, error) {
 	return count, nil
 }
 
+// update modifies one or more records in the database.
+// It executes pre/post update hooks and returns the number of affected rows.
 func update(m *DbMap, exec SqlExecutor, colFilter ColumnFilter, list ...interface{}) (int64, error) {
 	count := int64(0)
 	for _, ptr := range list {
@@ -511,7 +542,7 @@ func update(m *DbMap, exec SqlExecutor, colFilter ColumnFilter, list ...interfac
 
 		eval := elem.Addr().Interface()
 		if v, ok := eval.(HasPreUpdate); ok {
-			err = v.PreUpdate(exec)
+			err = v.PreUpdate(m.ctx, exec)
 			if err != nil {
 				return -1, err
 			}
@@ -544,7 +575,7 @@ func update(m *DbMap, exec SqlExecutor, colFilter ColumnFilter, list ...interfac
 		count += rows
 
 		if v, ok := eval.(HasPostUpdate); ok {
-			err = v.PostUpdate(exec)
+			err = v.PostUpdate(m.ctx, exec)
 			if err != nil {
 				return -1, err
 			}
@@ -553,6 +584,8 @@ func update(m *DbMap, exec SqlExecutor, colFilter ColumnFilter, list ...interfac
 	return count, nil
 }
 
+// insert adds one or more records to the database.
+// It executes pre/post insert hooks and handles auto-incrementing primary keys.
 func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 	for _, ptr := range list {
 		table, elem, err := m.tableForPointer(ptr, false)
@@ -562,7 +595,7 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 
 		eval := elem.Addr().Interface()
 		if v, ok := eval.(HasPreInsert); ok {
-			err := v.PreInsert(exec)
+			err := v.PreInsert(m.ctx, exec)
 			if err != nil {
 				return err
 			}
@@ -614,7 +647,7 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 		}
 
 		if v, ok := eval.(HasPostInsert); ok {
-			err := v.PostInsert(exec)
+			err := v.PostInsert(m.ctx, exec)
 			if err != nil {
 				return err
 			}
@@ -623,6 +656,7 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 	return nil
 }
 
+// exec executes a SQL query and returns the result.
 func exec(e SqlExecutor, query string, args ...interface{}) (sql.Result, error) {
 	executor, ctx := extractExecutorAndContext(e)
 
@@ -631,42 +665,4 @@ func exec(e SqlExecutor, query string, args ...interface{}) (sql.Result, error) 
 	}
 
 	return executor.Exec(query, args...)
-}
-
-func prepare(e SqlExecutor, query string) (*sql.Stmt, error) {
-	executor, ctx := extractExecutorAndContext(e)
-
-	if ctx != nil {
-		return executor.PrepareContext(ctx, query)
-	}
-
-	return executor.Prepare(query)
-}
-
-func queryRow(e SqlExecutor, query string, args ...interface{}) *sql.Row {
-	executor, ctx := extractExecutorAndContext(e)
-
-	if ctx != nil {
-		return executor.QueryRowContext(ctx, query, args...)
-	}
-
-	return executor.QueryRow(query, args...)
-}
-
-func query(e SqlExecutor, query string, args ...interface{}) (*sql.Rows, error) {
-	executor, ctx := extractExecutorAndContext(e)
-
-	if ctx != nil {
-		return executor.QueryContext(ctx, query, args...)
-	}
-
-	return executor.Query(query, args...)
-}
-
-func begin(m *DbMap) (*sql.Tx, error) {
-	if m.ctx != nil {
-		return m.Db.BeginTx(m.ctx, nil)
-	}
-
-	return m.Db.Begin()
 }

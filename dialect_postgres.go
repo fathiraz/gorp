@@ -16,21 +16,30 @@ type PostgresDialect struct {
 	LowercaseFields bool
 }
 
+// Type returns the dialect type
+func (d PostgresDialect) Type() DialectType {
+	return PostgreSQL
+}
+
+// QuerySuffix adds a Suffix to any query, usually ";"
 func (d PostgresDialect) QuerySuffix() string { return ";" }
 
-func (d PostgresDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bool) string {
+// ToSqlType returns the SQL column type to use when creating a
+// table of the given Go Type. maxsize can be used to switch based on
+// size. For example, in PostgreSQL []byte maps to bytea
+func (d PostgresDialect) ToSqlType(val reflect.Type, opts ColumnOptions) string {
 	switch val.Kind() {
 	case reflect.Ptr:
-		return d.ToSqlType(val.Elem(), maxsize, isAutoIncr)
+		return d.ToSqlType(val.Elem(), opts)
 	case reflect.Bool:
 		return "boolean"
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32:
-		if isAutoIncr {
+		if opts.IsAutoIncr {
 			return "serial"
 		}
 		return "integer"
 	case reflect.Int64, reflect.Uint64:
-		if isAutoIncr {
+		if opts.IsAutoIncr {
 			return "bigserial"
 		}
 		return "bigint"
@@ -55,12 +64,10 @@ func (d PostgresDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr boo
 		return "timestamp with time zone"
 	}
 
-	if maxsize > 0 {
-		return fmt.Sprintf("varchar(%d)", maxsize)
-	} else {
-		return "text"
+	if opts.MaxSize > 0 {
+		return fmt.Sprintf("varchar(%d)", opts.MaxSize)
 	}
-
+	return "text"
 }
 
 // Returns empty string
@@ -68,31 +75,37 @@ func (d PostgresDialect) AutoIncrStr() string {
 	return ""
 }
 
+// Returns "default"
 func (d PostgresDialect) AutoIncrBindValue() string {
 	return "default"
 }
 
+// Returns " returning [columnname]"
 func (d PostgresDialect) AutoIncrInsertSuffix(col *ColumnMap) string {
 	return " returning " + d.QuoteField(col.ColumnName)
 }
 
-// Returns suffix
+// Returns Suffix
 func (d PostgresDialect) CreateTableSuffix() string {
 	return d.suffix
 }
 
+// Returns "using"
 func (d PostgresDialect) CreateIndexSuffix() string {
 	return "using"
 }
 
+// Returns empty string
 func (d PostgresDialect) DropIndexSuffix() string {
 	return ""
 }
 
+// Returns "truncate"
 func (d PostgresDialect) TruncateClause() string {
 	return "truncate"
 }
 
+// Returns pg_sleep(s)
 func (d PostgresDialect) SleepClause(s time.Duration) string {
 	return fmt.Sprintf("pg_sleep(%f)", s.Seconds())
 }
@@ -102,6 +115,7 @@ func (d PostgresDialect) BindVar(i int) string {
 	return fmt.Sprintf("$%d", i+1)
 }
 
+// InsertAutoIncrToTarget executes the insert statement and assigns the auto-generated id to the target pointer
 func (d PostgresDialect) InsertAutoIncrToTarget(exec SqlExecutor, insertSql string, target interface{}, params ...interface{}) error {
 	rows, err := exec.Query(insertSql, params...)
 	if err != nil {
@@ -121,6 +135,7 @@ func (d PostgresDialect) InsertAutoIncrToTarget(exec SqlExecutor, insertSql stri
 	return rows.Err()
 }
 
+// Returns quoted field name based on LowercaseFields setting
 func (d PostgresDialect) QuoteField(f string) string {
 	if d.LowercaseFields {
 		return `"` + strings.ToLower(f) + `"`
@@ -128,22 +143,25 @@ func (d PostgresDialect) QuoteField(f string) string {
 	return `"` + f + `"`
 }
 
+// Returns quoted table name for query with optional schema
 func (d PostgresDialect) QuotedTableForQuery(schema string, table string) string {
 	if strings.TrimSpace(schema) == "" {
 		return d.QuoteField(table)
 	}
-
 	return schema + "." + d.QuoteField(table)
 }
 
+// Returns "if not exists"
 func (d PostgresDialect) IfSchemaNotExists(command, schema string) string {
 	return fmt.Sprintf("%s if not exists", command)
 }
 
+// Returns "if exists"
 func (d PostgresDialect) IfTableExists(command, schema, table string) string {
 	return fmt.Sprintf("%s if exists", command)
 }
 
+// Returns "if not exists"
 func (d PostgresDialect) IfTableNotExists(command, schema, table string) string {
 	return fmt.Sprintf("%s if not exists", command)
 }
