@@ -51,6 +51,11 @@ node_modules/
 # OS specific
 .DS_Store
 
+# Task Master, Claude, and Ruler directories
+.claude/
+.taskmaster/
+.ruler/
+
 # Task files
 # tasks.json
-# tasks/ 
+# tasks/
