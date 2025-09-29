@@ -408,10 +408,10 @@ func (mt *MigrationTransformer) findLineNumber(code, match string) int {
 // addRequiredImports adds necessary imports for the new API
 func (mt *MigrationTransformer) addRequiredImports(code string) string {
 	// Check if imports are already present
-	hasLegacy := strings.Contains(code, `"github.com/go-gorp/gorp/v3/legacy"`)
-	hasMapping := strings.Contains(code, `"github.com/go-gorp/gorp/v3/mapping"`)
-	hasQuery := strings.Contains(code, `"github.com/go-gorp/gorp/v3/query"`)
-	hasDB := strings.Contains(code, `"github.com/go-gorp/gorp/v3/db"`)
+	hasLegacy := strings.Contains(code, `"github.com/fathiraz/gorp/legacy"`)
+	hasMapping := strings.Contains(code, `"github.com/fathiraz/gorp/mapping"`)
+	hasQuery := strings.Contains(code, `"github.com/fathiraz/gorp/query"`)
+	hasDB := strings.Contains(code, `"github.com/fathiraz/gorp/db"`)
 	hasContext := strings.Contains(code, `"context"`)
 
 	var newImports []string
@@ -421,19 +421,19 @@ func (mt *MigrationTransformer) addRequiredImports(code string) string {
 	}
 
 	if !hasLegacy {
-		newImports = append(newImports, `"github.com/go-gorp/gorp/v3/legacy"`)
+		newImports = append(newImports, `"github.com/fathiraz/gorp/legacy"`)
 	}
 
 	if !hasMapping && mt.config.EnableGenerics {
-		newImports = append(newImports, `"github.com/go-gorp/gorp/v3/mapping"`)
+		newImports = append(newImports, `"github.com/fathiraz/gorp/mapping"`)
 	}
 
 	if !hasQuery && mt.config.EnableGenerics {
-		newImports = append(newImports, `"github.com/go-gorp/gorp/v3/query"`)
+		newImports = append(newImports, `"github.com/fathiraz/gorp/query"`)
 	}
 
 	if !hasDB && mt.config.EnableSQLX {
-		newImports = append(newImports, `"github.com/go-gorp/gorp/v3/db"`)
+		newImports = append(newImports, `"github.com/fathiraz/gorp/db"`)
 	}
 
 	if len(newImports) > 0 {

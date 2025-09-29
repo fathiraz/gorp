@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-gorp/gorp/v3"
+	"github.com/fathiraz/gorp"
 	_ "github.com/mattn/go-sqlite3"
 )
 

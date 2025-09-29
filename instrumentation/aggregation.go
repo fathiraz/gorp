@@ -401,122 +401,87 @@ func NewAggregatingMetricsCollector(underlying MetricsCollector) *AggregatingMet
 	}
 }
 
-// RecordQuery implements MetricsCollector with aggregation
-func (amc *AggregatingMetricsCollector) RecordQuery(operation, table string, duration time.Duration, err error) {
-	// Pass through to underlying collector
-	amc.underlying.RecordQuery(operation, table, duration, err)
+// Implement MetricsCollector interface
 
-	// Aggregate duration
-	labels := map[string]string{"operation": operation, "table": table}
-	if aggregator := amc.manager.GetAggregator("query_duration"); aggregator != nil {
-		aggregator.AddValue(duration.Seconds(), labels)
-	}
-}
-
-// RecordConnection implements MetricsCollector with aggregation
-func (amc *AggregatingMetricsCollector) RecordConnection(opened bool) {
-	amc.underlying.RecordConnection(opened)
-
-	labels := map[string]string{"event": "connection"}
-	value := 0.0
-	if opened {
-		value = 1.0
-	}
-
-	if aggregator := amc.manager.GetAggregator("connections"); aggregator != nil {
-		aggregator.AddValue(value, labels)
-	}
-}
-
-// RecordConnectionStats implements MetricsCollector with aggregation
-func (amc *AggregatingMetricsCollector) RecordConnectionStats(active, idle int, avgLifetime time.Duration) {
-	amc.underlying.RecordConnectionStats(active, idle, avgLifetime)
-
-	if aggregator := amc.manager.GetAggregator("connection_stats"); aggregator != nil {
-		aggregator.AddValue(float64(active), map[string]string{"type": "active"})
-		aggregator.AddValue(float64(idle), map[string]string{"type": "idle"})
-		aggregator.AddValue(avgLifetime.Seconds(), map[string]string{"type": "lifetime"})
-	}
-}
-
-// RecordTransaction implements MetricsCollector with aggregation
-func (amc *AggregatingMetricsCollector) RecordTransaction(duration time.Duration, committed bool) {
-	amc.underlying.RecordTransaction(duration, committed)
-
-	status := "committed"
-	if !committed {
-		status = "rolled_back"
-	}
-
-	if aggregator := amc.manager.GetAggregator("transaction_duration"); aggregator != nil {
-		aggregator.AddValue(duration.Seconds(), map[string]string{"status": status})
-	}
-}
-
-// RecordError implements MetricsCollector with aggregation
-func (amc *AggregatingMetricsCollector) RecordError(errorType, operation string) {
-	amc.underlying.RecordError(errorType, operation)
-
-	labels := map[string]string{"type": errorType, "operation": operation}
-	if aggregator := amc.manager.GetAggregator("errors"); aggregator != nil {
+func (amc *AggregatingMetricsCollector) IncrementCounter(name string, labels map[string]string) {
+	amc.underlying.IncrementCounter(name, labels)
+	if aggregator := amc.manager.GetAggregator("counters"); aggregator != nil {
 		aggregator.AddValue(1.0, labels)
 	}
 }
 
-// Counter implements MetricsCollector with aggregation
-func (amc *AggregatingMetricsCollector) Counter(name string, labels map[string]string) {
-	amc.underlying.Counter(name, labels)
-
-	if aggregator := amc.manager.GetAggregator("custom_counters"); aggregator != nil {
-		newLabels := make(map[string]string)
-		newLabels["counter_name"] = name
-		for k, v := range labels {
-			newLabels[k] = v
-		}
-		aggregator.AddValue(1.0, newLabels)
+func (amc *AggregatingMetricsCollector) IncrementCounterBy(name string, value float64, labels map[string]string) {
+	amc.underlying.IncrementCounterBy(name, value, labels)
+	if aggregator := amc.manager.GetAggregator("counters"); aggregator != nil {
+		aggregator.AddValue(value, labels)
 	}
 }
 
-// Gauge implements MetricsCollector with aggregation
-func (amc *AggregatingMetricsCollector) Gauge(name string, value float64, labels map[string]string) {
-	amc.underlying.Gauge(name, value, labels)
-
-	if aggregator := amc.manager.GetAggregator("custom_gauges"); aggregator != nil {
-		newLabels := make(map[string]string)
-		newLabels["gauge_name"] = name
-		for k, v := range labels {
-			newLabels[k] = v
-		}
-		aggregator.AddValue(value, newLabels)
+func (amc *AggregatingMetricsCollector) SetGauge(name string, value float64, labels map[string]string) {
+	amc.underlying.SetGauge(name, value, labels)
+	if aggregator := amc.manager.GetAggregator("gauges"); aggregator != nil {
+		aggregator.AddValue(value, labels)
 	}
 }
 
-// Histogram implements MetricsCollector with aggregation
-func (amc *AggregatingMetricsCollector) Histogram(name string, value float64, labels map[string]string) {
-	amc.underlying.Histogram(name, value, labels)
-
-	if aggregator := amc.manager.GetAggregator("custom_histograms"); aggregator != nil {
-		newLabels := make(map[string]string)
-		newLabels["histogram_name"] = name
-		for k, v := range labels {
-			newLabels[k] = v
-		}
-		aggregator.AddValue(value, newLabels)
+func (amc *AggregatingMetricsCollector) IncrementGauge(name string, labels map[string]string) {
+	amc.underlying.IncrementGauge(name, labels)
+	if aggregator := amc.manager.GetAggregator("gauges"); aggregator != nil {
+		aggregator.AddValue(1.0, labels)
 	}
 }
 
-// Timer implements MetricsCollector with aggregation
-func (amc *AggregatingMetricsCollector) Timer(name string, duration time.Duration, labels map[string]string) {
-	amc.underlying.Timer(name, duration, labels)
-
-	if aggregator := amc.manager.GetAggregator("custom_timers"); aggregator != nil {
-		newLabels := make(map[string]string)
-		newLabels["timer_name"] = name
-		for k, v := range labels {
-			newLabels[k] = v
-		}
-		aggregator.AddValue(duration.Seconds(), newLabels)
+func (amc *AggregatingMetricsCollector) DecrementGauge(name string, labels map[string]string) {
+	amc.underlying.DecrementGauge(name, labels)
+	if aggregator := amc.manager.GetAggregator("gauges"); aggregator != nil {
+		aggregator.AddValue(-1.0, labels)
 	}
+}
+
+func (amc *AggregatingMetricsCollector) RecordHistogram(name string, value float64, labels map[string]string) {
+	amc.underlying.RecordHistogram(name, value, labels)
+	if aggregator := amc.manager.GetAggregator("histograms"); aggregator != nil {
+		aggregator.AddValue(value, labels)
+	}
+}
+
+func (amc *AggregatingMetricsCollector) RecordDuration(name string, duration time.Duration, labels map[string]string) {
+	amc.underlying.RecordDuration(name, duration, labels)
+	if aggregator := amc.manager.GetAggregator("durations"); aggregator != nil {
+		aggregator.AddValue(duration.Seconds(), labels)
+	}
+}
+
+func (amc *AggregatingMetricsCollector) StartTimer(name string, labels map[string]string) Timer {
+	return amc.underlying.StartTimer(name, labels)
+}
+
+func (amc *AggregatingMetricsCollector) RecordTimer(name string, labels map[string]string) func() {
+	return amc.underlying.RecordTimer(name, labels)
+}
+
+func (amc *AggregatingMetricsCollector) RegisterCustomMetric(name, help string, metricType MetricType, labelNames []string) error {
+	return amc.underlying.RegisterCustomMetric(name, help, metricType, labelNames)
+}
+
+func (amc *AggregatingMetricsCollector) RecordCustomMetric(name string, value float64, labels map[string]string) {
+	amc.underlying.RecordCustomMetric(name, value, labels)
+	if aggregator := amc.manager.GetAggregator("custom"); aggregator != nil {
+		aggregator.AddValue(value, labels)
+	}
+}
+
+func (amc *AggregatingMetricsCollector) Start(ctx context.Context) error {
+	return amc.underlying.Start(ctx)
+}
+
+func (amc *AggregatingMetricsCollector) Stop(ctx context.Context) error {
+	amc.manager.CloseAll()
+	return amc.underlying.Stop(ctx)
+}
+
+func (amc *AggregatingMetricsCollector) Flush(ctx context.Context) error {
+	return amc.underlying.Flush(ctx)
 }
 
 // InitializeStandardAggregators initializes standard aggregators

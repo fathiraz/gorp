@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-gorp/gorp/v3/mapping"
+	"github.com/fathiraz/gorp/mapping"
 )
 
 // PreparedStatementCache manages prepared statement reuse

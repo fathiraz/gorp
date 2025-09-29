@@ -11,7 +11,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/go-gorp/gorp/v3/db"
+	"github.com/fathiraz/gorp/db"
 )
 
 // ProfilerHook provides performance profiling capabilities for database operations

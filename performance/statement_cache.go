@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/go-gorp/gorp/v3/db"
+	"github.com/fathiraz/gorp/db"
 )
 
 // StatementCache provides LRU caching for prepared statements with TTL support

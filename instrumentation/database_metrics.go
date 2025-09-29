@@ -2,13 +2,11 @@ package instrumentation
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jmoiron/sqlx"
 )
@@ -152,7 +150,7 @@ func (pmc *PostgreSQLMetricsCollector) collectConnectionStats(ctx context.Contex
 			pc.RecordPostgreSQLConnections(state, database, int(count))
 		} else {
 			labels := map[string]string{"state": state, "database": database}
-			pmc.collector.Gauge("postgresql_connections_by_state", count, labels)
+			pmc.collector.SetGauge("postgresql_connections_by_state", count, labels)
 		}
 	}
 }
@@ -185,7 +183,7 @@ func (pmc *PostgreSQLMetricsCollector) collectReplicationStats(ctx context.Conte
 			pc.RecordPostgreSQLReplicationLag(lagSeconds)
 		} else {
 			labels := map[string]string{"client": clientAddr, "state": state}
-			pmc.collector.Gauge("postgresql_replication_lag_seconds", lagSeconds, labels)
+			pmc.collector.SetGauge("postgresql_replication_lag_seconds", lagSeconds, labels)
 		}
 	}
 }
@@ -213,7 +211,7 @@ func (pmc *PostgreSQLMetricsCollector) collectLockStats(ctx context.Context) {
 			pc.RecordPostgreSQLLocks(lockType, mode, int(count))
 		} else {
 			labels := map[string]string{"lock_type": lockType, "mode": mode}
-			pmc.collector.Gauge("postgresql_locks_held", count, labels)
+			pmc.collector.SetGauge("postgresql_locks_held", count, labels)
 		}
 	}
 }
@@ -250,14 +248,14 @@ func (pmc *PostgreSQLMetricsCollector) collectTableStats(ctx context.Context) {
 		idxScan := pmc.getFloat64(row, "idx_scan")
 
 		labels := map[string]string{"schema": schema, "table": table}
-		pmc.collector.Gauge("postgresql_table_size_bytes", sizeBytes, labels)
-		pmc.collector.Counter("postgresql_seq_scans_total", map[string]string{"schema": schema, "table": table})
-		pmc.collector.Counter("postgresql_idx_scans_total", map[string]string{"schema": schema, "table": table})
+		pmc.collector.SetGauge("postgresql_table_size_bytes", sizeBytes, labels)
+		pmc.collector.IncrementCounter("postgresql_seq_scans_total", map[string]string{"schema": schema, "table": table})
+		pmc.collector.IncrementCounter("postgresql_idx_scans_total", map[string]string{"schema": schema, "table": table})
 
 		// Calculate index usage ratio
 		if seqScan+idxScan > 0 {
 			idxRatio := idxScan / (seqScan + idxScan)
-			pmc.collector.Gauge("postgresql_index_usage_ratio", idxRatio, labels)
+			pmc.collector.SetGauge("postgresql_index_usage_ratio", idxRatio, labels)
 		}
 	}
 }
@@ -291,7 +289,7 @@ func (pmc *PostgreSQLMetricsCollector) collectIndexStats(ctx context.Context) {
 		sizeBytes := pmc.getFloat64(row, "size_bytes")
 
 		labels := map[string]string{"schema": schema, "table": table, "index": index}
-		pmc.collector.Gauge("postgresql_unused_index_size_bytes", sizeBytes, labels)
+		pmc.collector.SetGauge("postgresql_unused_index_size_bytes", sizeBytes, labels)
 	}
 }
 
@@ -333,8 +331,8 @@ func (pmc *PostgreSQLMetricsCollector) collectBackgroundWriterStats(ctx context.
 
 	for statName, value := range stats {
 		labels := map[string]string{"stat_type": statName}
-		pmc.collector.Counter("postgresql_bgwriter_stats_total", labels)
-		pmc.collector.Gauge("postgresql_bgwriter_"+statName, value, nil)
+		pmc.collector.IncrementCounter("postgresql_bgwriter_stats_total", labels)
+		pmc.collector.SetGauge("postgresql_bgwriter_"+statName, value, nil)
 	}
 }
 
@@ -370,9 +368,9 @@ func (pmc *PostgreSQLMetricsCollector) collectVacuumStats(ctx context.Context) {
 		deadRatio := pmc.getFloat64(row, "dead_tuple_ratio")
 
 		labels := map[string]string{"schema": schema, "table": table}
-		pmc.collector.Gauge("postgresql_dead_tuples", deadTuples, labels)
-		pmc.collector.Gauge("postgresql_live_tuples", liveTuples, labels)
-		pmc.collector.Gauge("postgresql_dead_tuple_ratio", deadRatio, labels)
+		pmc.collector.SetGauge("postgresql_dead_tuples", deadTuples, labels)
+		pmc.collector.SetGauge("postgresql_live_tuples", liveTuples, labels)
+		pmc.collector.SetGauge("postgresql_dead_tuple_ratio", deadRatio, labels)
 	}
 }
 
@@ -415,7 +413,7 @@ func (mmc *MySQLMetricsCollector) collectInnoDBStats(ctx context.Context) {
 	// Extract key metrics from status text (this is a simplified example)
 	if strings.Contains(status, "Buffer pool hit rate") {
 		// Parse buffer pool hit rate from status
-		pmc.collector.Gauge("mysql_innodb_buffer_pool_hit_rate", 0.95, nil) // Placeholder
+		mmc.collector.SetGauge("mysql_innodb_buffer_pool_hit_rate", 0.95, nil) // Placeholder
 	}
 }
 
@@ -434,7 +432,7 @@ func (mmc *MySQLMetricsCollector) collectReplicationStats(ctx context.Context) {
 	if pc, ok := mmc.collector.(*PrometheusCollector); ok {
 		pc.RecordMySQLReplicationDelay(secondsBehindMaster)
 	} else {
-		mmc.collector.Gauge("mysql_replication_delay_seconds", secondsBehindMaster, nil)
+		mmc.collector.SetGauge("mysql_replication_delay_seconds", secondsBehindMaster, nil)
 	}
 }
 
@@ -458,7 +456,7 @@ func (mmc *MySQLMetricsCollector) collectConnectionStats(ctx context.Context) {
 		varValue := mmc.getFloat64(row, "VARIABLE_VALUE")
 
 		metricName := strings.ToLower(strings.Replace(varName, "_", "_", -1))
-		mmc.collector.Gauge("mysql_"+metricName, varValue, nil)
+		mmc.collector.SetGauge("mysql_"+metricName, varValue, nil)
 	}
 }
 
@@ -488,8 +486,8 @@ func (mmc *MySQLMetricsCollector) collectTableStats(ctx context.Context) {
 		tableRows := mmc.getFloat64(row, "table_rows")
 
 		labels := map[string]string{"database": schema, "table": table}
-		mmc.collector.Gauge("mysql_table_size_bytes", sizeBytes, labels)
-		mmc.collector.Gauge("mysql_table_rows", tableRows, labels)
+		mmc.collector.SetGauge("mysql_table_size_bytes", sizeBytes, labels)
+		mmc.collector.SetGauge("mysql_table_rows", tableRows, labels)
 	}
 }
 
@@ -512,7 +510,7 @@ func (mmc *MySQLMetricsCollector) collectSlowQueries(ctx context.Context) {
 		// This would need to track incremental changes
 		pc.RecordMySQLSlowQuery()
 	} else {
-		mmc.collector.Gauge("mysql_slow_queries_total", slowQueries, nil)
+		mmc.collector.SetGauge("mysql_slow_queries_total", slowQueries, nil)
 	}
 }
 
@@ -537,7 +535,7 @@ func (mmc *MySQLMetricsCollector) collectBufferPoolStats(ctx context.Context) {
 
 		statType := strings.TrimPrefix(strings.ToLower(varName), "innodb_buffer_pool_")
 		labels := map[string]string{"stat_type": statType}
-		mmc.collector.Gauge("mysql_buffer_pool_stats", varValue, labels)
+		mmc.collector.SetGauge("mysql_buffer_pool_stats", varValue, labels)
 	}
 }
 
@@ -567,8 +565,6 @@ func (smc *SQLiteMetricsCollector) CollectMetrics(ctx context.Context) {
 // collectDatabaseStats collects SQLite database statistics
 func (smc *SQLiteMetricsCollector) collectDatabaseStats(ctx context.Context) {
 	// File size
-	query := "PRAGMA page_count; PRAGMA page_size;"
-
 	if sqlxDB, ok := smc.db.(*sqlx.DB); ok {
 		var pageCount, pageSize int64
 
@@ -581,9 +577,9 @@ func (smc *SQLiteMetricsCollector) collectDatabaseStats(ctx context.Context) {
 				if pc, ok := smc.collector.(*PrometheusCollector); ok {
 					pc.RecordSQLiteFileSize(fileSize)
 				} else {
-					smc.collector.Gauge("sqlite_file_size_bytes", float64(fileSize), nil)
-					smc.collector.Gauge("sqlite_page_count", float64(pageCount), nil)
-					smc.collector.Gauge("sqlite_page_size", float64(pageSize), nil)
+					smc.collector.SetGauge("sqlite_file_size_bytes", float64(fileSize), nil)
+					smc.collector.SetGauge("sqlite_page_count", float64(pageCount), nil)
+					smc.collector.SetGauge("sqlite_page_size", float64(pageSize), nil)
 				}
 			}
 		}
@@ -605,7 +601,7 @@ func (smc *SQLiteMetricsCollector) collectCacheStats(ctx context.Context) {
 			err := sqlxDB.GetContext(ctx, &value, query)
 			if err == nil {
 				labels := map[string]string{"stat_type": statName}
-				smc.collector.Gauge("sqlite_cache_stats", float64(value), labels)
+				smc.collector.SetGauge("sqlite_cache_stats", float64(value), labels)
 			}
 		}
 	}
@@ -624,7 +620,7 @@ func (smc *SQLiteMetricsCollector) collectWALStats(ctx context.Context) {
 			err := sqlxDB.GetContext(ctx, &value, query)
 			if err == nil {
 				labels := map[string]string{"stat_type": statName}
-				smc.collector.Gauge("sqlite_wal_stats", float64(value), labels)
+				smc.collector.SetGauge("sqlite_wal_stats", float64(value), labels)
 			}
 		}
 	}
@@ -661,7 +657,7 @@ func (smc *SQLiteMetricsCollector) collectPragmaSettings(ctx context.Context) {
 				}
 
 				labels := map[string]string{"pragma_name": pragma}
-				smc.collector.Gauge("sqlite_pragma_settings", numValue, labels)
+				smc.collector.SetGauge("sqlite_pragma_settings", numValue, labels)
 			}
 		}
 	}
@@ -710,7 +706,7 @@ func (ssmc *SQLServerMetricsCollector) collectBufferCacheStats(ctx context.Conte
 	if pc, ok := ssmc.collector.(*PrometheusCollector); ok {
 		pc.RecordSQLServerBufferCacheHitRatio(hitRatio)
 	} else {
-		ssmc.collector.Gauge("sqlserver_buffer_cache_hit_ratio", hitRatio, nil)
+		ssmc.collector.SetGauge("sqlserver_buffer_cache_hit_ratio", hitRatio, nil)
 	}
 }
 
@@ -737,9 +733,9 @@ func (ssmc *SQLServerMetricsCollector) collectWaitStats(ctx context.Context) {
 		waitingTasks := ssmc.getFloat64(row, "waiting_tasks_count")
 
 		labels := map[string]string{"wait_type": waitType}
-		ssmc.collector.Counter("sqlserver_wait_stats_total", labels)
-		ssmc.collector.Gauge("sqlserver_wait_time_ms", waitTime, labels)
-		ssmc.collector.Gauge("sqlserver_waiting_tasks", waitingTasks, labels)
+		ssmc.collector.IncrementCounter("sqlserver_wait_stats_total", labels)
+		ssmc.collector.SetGauge("sqlserver_wait_time_ms", waitTime, labels)
+		ssmc.collector.SetGauge("sqlserver_waiting_tasks", waitingTasks, labels)
 	}
 }
 
@@ -765,7 +761,7 @@ func (ssmc *SQLServerMetricsCollector) collectLockStats(ctx context.Context) {
 		lockCount := ssmc.getFloat64(row, "lock_count")
 
 		labels := map[string]string{"lock_type": resourceType, "mode": requestMode}
-		ssmc.collector.Gauge("sqlserver_lock_stats", lockCount, labels)
+		ssmc.collector.SetGauge("sqlserver_lock_stats", lockCount, labels)
 	}
 }
 
@@ -791,7 +787,7 @@ func (ssmc *SQLServerMetricsCollector) collectDatabaseSizes(ctx context.Context)
 		sizeBytes := ssmc.getFloat64(row, "size_bytes")
 
 		labels := map[string]string{"database": database, "file_type": fileType}
-		ssmc.collector.Gauge("sqlserver_database_size_bytes", sizeBytes, labels)
+		ssmc.collector.SetGauge("sqlserver_database_size_bytes", sizeBytes, labels)
 	}
 }
 
@@ -821,7 +817,7 @@ func (ssmc *SQLServerMetricsCollector) collectIndexFragmentation(ctx context.Con
 		fragmentation := ssmc.getFloat64(row, "avg_fragmentation_in_percent")
 
 		labels := map[string]string{"database": database, "table": table, "index": index}
-		ssmc.collector.Gauge("sqlserver_index_fragmentation_percent", fragmentation, labels)
+		ssmc.collector.SetGauge("sqlserver_index_fragmentation_percent", fragmentation, labels)
 	}
 }
 

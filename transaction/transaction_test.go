@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 
-	"github.com/go-gorp/gorp/v3/db"
+	"github.com/fathiraz/gorp/db"
 )
 
 // TestEntity for testing

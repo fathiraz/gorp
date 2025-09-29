@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-gorp/gorp/v3"
-	"github.com/go-gorp/gorp/v3/db"
-	"github.com/go-gorp/gorp/v3/logging"
-	"github.com/go-gorp/gorp/v3/mapping"
-	"github.com/go-gorp/gorp/v3/query"
+	"github.com/fathiraz/gorp"
+	"github.com/fathiraz/gorp/db"
+	"github.com/fathiraz/gorp/logging"
+	"github.com/fathiraz/gorp/mapping"
+	"github.com/fathiraz/gorp/query"
 )
 
 // CompatibilityMode controls the behavior of the compatibility layer

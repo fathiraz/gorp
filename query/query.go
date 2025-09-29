@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-gorp/gorp/v3/mapping"
+	"github.com/fathiraz/gorp/mapping"
 )
 
 // Queryable defines types that can be queried

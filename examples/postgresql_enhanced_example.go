@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/go-gorp/gorp/v3/db"
+	"github.com/fathiraz/gorp/db"
 )
 
 // User represents a user with PostgreSQL-specific types

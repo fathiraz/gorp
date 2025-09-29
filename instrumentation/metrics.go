@@ -2,53 +2,9 @@ package instrumentation
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
-)
-
-// MetricsCollector defines the interface for pluggable metrics backends
-type MetricsCollector interface {
-	// Counter operations
-	IncrementCounter(name string, labels map[string]string)
-	IncrementCounterBy(name string, value float64, labels map[string]string)
-
-	// Gauge operations
-	SetGauge(name string, value float64, labels map[string]string)
-	IncrementGauge(name string, labels map[string]string)
-	DecrementGauge(name string, labels map[string]string)
-
-	// Histogram operations
-	RecordHistogram(name string, value float64, labels map[string]string)
-	RecordDuration(name string, duration time.Duration, labels map[string]string)
-
-	// Timer operations
-	StartTimer(name string, labels map[string]string) Timer
-	RecordTimer(name string, labels map[string]string) func()
-
-	// Custom metrics
-	RegisterCustomMetric(name, help string, metricType MetricType, labels []string) error
-	RecordCustomMetric(name string, value float64, labels map[string]string)
-
-	// Lifecycle
-	Start(ctx context.Context) error
-	Stop(ctx context.Context) error
-	Flush(ctx context.Context) error
-}
-
-// Timer represents a running timer for measuring durations
-type Timer interface {
-	Stop() time.Duration
-	Elapsed() time.Duration
-}
-
-// MetricType represents the type of metric
-type MetricType string
-
-const (
-	MetricTypeCounter   MetricType = "counter"
-	MetricTypeGauge     MetricType = "gauge"
-	MetricTypeHistogram MetricType = "histogram"
-	MetricTypeSummary   MetricType = "summary"
 )
 
 // DatabaseMetrics contains standard database operation metrics
@@ -239,7 +195,6 @@ type MetricsManager struct {
 	collectors map[string]MetricsCollector
 	config     *MetricsConfig
 	metrics    *DatabaseMetrics
-	aggregator *MetricsAggregator
 	mu         sync.RWMutex
 	started    bool
 	ctx        context.Context
@@ -258,35 +213,34 @@ func NewMetricsManager(config *MetricsConfig) *MetricsManager {
 		collectors: make(map[string]MetricsCollector),
 		config:     config,
 		metrics:    DefaultDatabaseMetrics(),
-		aggregator: NewMetricsAggregator(config),
 		ctx:        ctx,
 		cancel:     cancel,
 	}
 }
 
 // RegisterCollector registers a metrics collector
-func (mm *MetricsManager) RegisterCollector(name string, collector MetricsCollector) error {
+func (mm *MetricsManager) RegisterCollector(collectorName string, collector MetricsCollector) error {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 
-	if _, exists := mm.collectors[name]; exists {
-		return ErrCollectorAlreadyRegistered{Name: name}
+	if _, exists := mm.collectors[collectorName]; exists {
+		return ErrCollectorAlreadyRegistered{Name: collectorName}
 	}
 
-	mm.collectors[name] = collector
+	mm.collectors[collectorName] = collector
 	return nil
 }
 
 // UnregisterCollector unregisters a metrics collector
-func (mm *MetricsManager) UnregisterCollector(name string) error {
+func (mm *MetricsManager) UnregisterCollector(collectorName string) error {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 
-	if _, exists := mm.collectors[name]; !exists {
-		return ErrCollectorNotFound{Name: name}
+	if _, exists := mm.collectors[collectorName]; !exists {
+		return ErrCollectorNotFound{Name: collectorName}
 	}
 
-	delete(mm.collectors, name)
+	delete(mm.collectors, collectorName)
 	return nil
 }
 
@@ -300,15 +254,10 @@ func (mm *MetricsManager) Start(ctx context.Context) error {
 	}
 
 	// Start all collectors
-	for name, collector := range mm.collectors {
+	for collectorName, collector := range mm.collectors {
 		if err := collector.Start(ctx); err != nil {
-			return ErrCollectorStartFailed{Name: name, Err: err}
+			return ErrCollectorStartFailed{Name: collectorName, Err: err}
 		}
-	}
-
-	// Start aggregator
-	if err := mm.aggregator.Start(ctx); err != nil {
-		return err
 	}
 
 	mm.started = true
@@ -332,16 +281,11 @@ func (mm *MetricsManager) Stop(ctx context.Context) error {
 	mm.cancel()
 
 	// Stop all collectors
-	for name, collector := range mm.collectors {
+	for _, collector := range mm.collectors {
 		if err := collector.Stop(ctx); err != nil {
 			// Log error but continue stopping other collectors
 			continue
 		}
-	}
-
-	// Stop aggregator
-	if err := mm.aggregator.Stop(ctx); err != nil {
-		return err
 	}
 
 	mm.started = false
@@ -388,9 +332,6 @@ func (mm *MetricsManager) IncrementCounter(name string, labels map[string]string
 	for _, collector := range mm.collectors {
 		collector.IncrementCounter(name, allLabels)
 	}
-
-	// Record in aggregator
-	mm.aggregator.Record(name, 1, allLabels)
 }
 
 // RecordDuration records a duration across all collectors
@@ -407,8 +348,6 @@ func (mm *MetricsManager) RecordDuration(name string, duration time.Duration, la
 	for _, collector := range mm.collectors {
 		collector.RecordDuration(name, duration, allLabels)
 	}
-
-	mm.aggregator.Record(name, duration.Seconds(), allLabels)
 }
 
 // SetGauge sets a gauge value across all collectors
@@ -425,8 +364,6 @@ func (mm *MetricsManager) SetGauge(name string, value float64, labels map[string
 	for _, collector := range mm.collectors {
 		collector.SetGauge(name, value, allLabels)
 	}
-
-	mm.aggregator.SetGauge(name, value, allLabels)
 }
 
 // isMetricEnabled checks if a metric is enabled in configuration
@@ -475,7 +412,12 @@ func (mm *MetricsManager) GetMetrics() map[string]interface{} {
 	mm.mu.RLock()
 	defer mm.mu.RUnlock()
 
-	return mm.aggregator.GetSnapshot()
+	// Return basic metrics info - could be enhanced to aggregate from collectors
+	return map[string]interface{}{
+		"enabled":    mm.config.Enabled,
+		"collectors": len(mm.collectors),
+		"started":    mm.started,
+	}
 }
 
 // DatabaseMetricsCollector provides convenience methods for database metrics

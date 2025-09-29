@@ -283,18 +283,18 @@ func (cmr *CustomMetricsRegistry) recordMetric(metric BusinessMetric) {
 	for _, collector := range cmr.collectors {
 		switch metric.Type {
 		case "counter":
-			collector.Counter(metric.Name, metric.Labels)
+			collector.IncrementCounter(metric.Name, metric.Labels)
 		case "gauge":
 			if value, ok := metric.Value.(float64); ok {
-				collector.Gauge(metric.Name, value, metric.Labels)
+				collector.SetGauge(metric.Name, value, metric.Labels)
 			}
 		case "histogram":
 			if value, ok := metric.Value.(float64); ok {
-				collector.Histogram(metric.Name, value, metric.Labels)
+				collector.RecordHistogram(metric.Name, value, metric.Labels)
 			}
 		case "timer":
 			if duration, ok := metric.Value.(time.Duration); ok {
-				collector.Timer(metric.Name, duration, metric.Labels)
+				collector.RecordDuration(metric.Name, duration, metric.Labels)
 			}
 		}
 	}

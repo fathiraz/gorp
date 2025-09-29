@@ -65,22 +65,85 @@ func (l *DefaultLogger) Error(msg string, args ...interface{}) {
 
 // MetricsCollector defines the interface for collecting metrics
 type MetricsCollector interface {
-	// IncrementCounter increments a counter metric
-	IncrementCounter(name string, labels map[string]string, value int64)
+	// Counter operations
+	IncrementCounter(name string, labels map[string]string)
+	IncrementCounterBy(name string, value float64, labels map[string]string)
 
-	// RecordHistogram records a histogram value
-	RecordHistogram(name string, labels map[string]string, value float64)
+	// Gauge operations
+	SetGauge(name string, value float64, labels map[string]string)
+	IncrementGauge(name string, labels map[string]string)
+	DecrementGauge(name string, labels map[string]string)
 
-	// RecordGauge records a gauge value
-	RecordGauge(name string, labels map[string]string, value float64)
+	// Histogram operations
+	RecordHistogram(name string, value float64, labels map[string]string)
+	RecordDuration(name string, duration time.Duration, labels map[string]string)
+
+	// Timer operations
+	StartTimer(name string, labels map[string]string) Timer
+	RecordTimer(name string, labels map[string]string) func()
+
+	// Custom metrics
+	RegisterCustomMetric(name, help string, metricType MetricType, labels []string) error
+	RecordCustomMetric(name string, value float64, labels map[string]string)
+
+	// Lifecycle
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
+	Flush(ctx context.Context) error
 }
+
+// Timer represents a running timer for measuring durations
+type Timer interface {
+	Stop() time.Duration
+	Elapsed() time.Duration
+}
+
+// MetricType represents the type of metric
+type MetricType string
+
+const (
+	MetricTypeCounter   MetricType = "counter"
+	MetricTypeGauge     MetricType = "gauge"
+	MetricTypeHistogram MetricType = "histogram"
+	MetricTypeSummary   MetricType = "summary"
+)
 
 // NoOpMetricsCollector provides a no-op implementation of MetricsCollector
 type NoOpMetricsCollector struct{}
 
-func (NoOpMetricsCollector) IncrementCounter(name string, labels map[string]string, value int64) {}
-func (NoOpMetricsCollector) RecordHistogram(name string, labels map[string]string, value float64) {}
-func (NoOpMetricsCollector) RecordGauge(name string, labels map[string]string, value float64)      {}
+func (NoOpMetricsCollector) IncrementCounter(name string, labels map[string]string)                      {}
+func (NoOpMetricsCollector) IncrementCounterBy(name string, value float64, labels map[string]string)    {}
+func (NoOpMetricsCollector) SetGauge(name string, value float64, labels map[string]string)              {}
+func (NoOpMetricsCollector) IncrementGauge(name string, labels map[string]string)                       {}
+func (NoOpMetricsCollector) DecrementGauge(name string, labels map[string]string)                       {}
+func (NoOpMetricsCollector) RecordHistogram(name string, value float64, labels map[string]string)       {}
+func (NoOpMetricsCollector) RecordDuration(name string, duration time.Duration, labels map[string]string) {}
+func (NoOpMetricsCollector) StartTimer(name string, labels map[string]string) Timer                     { return &NoOpTimer{} }
+func (NoOpMetricsCollector) RecordTimer(name string, labels map[string]string) func()                   { return func() {} }
+func (NoOpMetricsCollector) RegisterCustomMetric(name, help string, metricType MetricType, labels []string) error { return nil }
+func (NoOpMetricsCollector) RecordCustomMetric(name string, value float64, labels map[string]string)    {}
+func (NoOpMetricsCollector) Start(ctx context.Context) error                                            { return nil }
+func (NoOpMetricsCollector) Stop(ctx context.Context) error                                             { return nil }
+func (NoOpMetricsCollector) Flush(ctx context.Context) error                                            { return nil }
+
+// NoOpTimer provides a no-op implementation of Timer
+type NoOpTimer struct {
+	start time.Time
+}
+
+func (t *NoOpTimer) Stop() time.Duration {
+	if t.start.IsZero() {
+		t.start = time.Now()
+	}
+	return time.Since(t.start)
+}
+
+func (t *NoOpTimer) Elapsed() time.Duration {
+	if t.start.IsZero() {
+		t.start = time.Now()
+	}
+	return time.Since(t.start)
+}
 
 // Instrumentation provides instrumentation capabilities
 type Instrumentation struct {
@@ -112,7 +175,7 @@ func New(config Config) *Instrumentation {
 
 	tracerName := config.TracerName
 	if tracerName == "" {
-		tracerName = "github.com/go-gorp/gorp/v3"
+		tracerName = "github.com/fathiraz/gorp"
 	}
 
 	return &Instrumentation{
@@ -159,14 +222,14 @@ func (i *Instrumentation) LogQuery(ctx context.Context, query string, args []int
 	if err != nil {
 		labels["status"] = "error"
 		i.logger.Error("Query failed: %s, args: %v, duration: %v, error: %v", query, args, duration, err)
-		i.metricsCollector.IncrementCounter("gorp_query_errors_total", labels, 1)
+		i.metricsCollector.IncrementCounter("gorp_query_errors_total", labels)
 	} else {
 		labels["status"] = "success"
 		i.logger.Debug("Query executed: %s, args: %v, duration: %v", query, args, duration)
-		i.metricsCollector.IncrementCounter("gorp_queries_total", labels, 1)
+		i.metricsCollector.IncrementCounter("gorp_queries_total", labels)
 	}
 
-	i.metricsCollector.RecordHistogram("gorp_query_duration_seconds", labels, duration.Seconds())
+	i.metricsCollector.RecordDuration("gorp_query_duration_seconds", duration, labels)
 }
 
 // LogTransaction logs a database transaction
@@ -182,14 +245,14 @@ func (i *Instrumentation) LogTransaction(ctx context.Context, operation string, 
 	if err != nil {
 		labels["status"] = "error"
 		i.logger.Error("Transaction %s failed: duration: %v, error: %v", operation, duration, err)
-		i.metricsCollector.IncrementCounter("gorp_transaction_errors_total", labels, 1)
+		i.metricsCollector.IncrementCounter("gorp_transaction_errors_total", labels)
 	} else {
 		labels["status"] = "success"
 		i.logger.Debug("Transaction %s completed: duration: %v", operation, duration)
-		i.metricsCollector.IncrementCounter("gorp_transactions_total", labels, 1)
+		i.metricsCollector.IncrementCounter("gorp_transactions_total", labels)
 	}
 
-	i.metricsCollector.RecordHistogram("gorp_transaction_duration_seconds", labels, duration.Seconds())
+	i.metricsCollector.RecordDuration("gorp_transaction_duration_seconds", duration, labels)
 }
 
 // WithSpanAttributes adds attributes to the current span
@@ -261,6 +324,6 @@ func (qc *QueryContext) Finish(query string, args []interface{}, err error) {
 var Default = New(Config{
 	Logger:           NewDefaultLogger(LogLevelInfo),
 	MetricsCollector: &NoOpMetricsCollector{},
-	TracerName:       "github.com/go-gorp/gorp/v3",
+	TracerName:       "github.com/fathiraz/gorp",
 	Enabled:          false,
 })

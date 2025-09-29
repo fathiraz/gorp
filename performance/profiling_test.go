@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-gorp/gorp/v3/db"
+	"github.com/fathiraz/gorp/db"
 )
 
 func TestProfilerHook_Basic(t *testing.T) {

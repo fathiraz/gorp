@@ -1,8 +1,8 @@
 package instrumentation
 
 import (
+	"context"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
@@ -26,9 +26,9 @@ type PrometheusCollector struct {
 	errorTotal          *prometheus.CounterVec
 
 	// Database-specific metrics
-	postgresMetrics *PostgreSQLPrometheusMetrics
-	mysqlMetrics    *MySQLPrometheusMetrics
-	sqliteMetrics   *SQLitePrometheusMetrics
+	postgresMetrics  *PostgreSQLPrometheusMetrics
+	mysqlMetrics     *MySQLPrometheusMetrics
+	sqliteMetrics    *SQLitePrometheusMetrics
 	sqlserverMetrics *SQLServerPrometheusMetrics
 
 	// Custom metrics storage
@@ -39,6 +39,22 @@ type PrometheusCollector struct {
 	metricsLock      sync.RWMutex
 
 	namespace string
+}
+
+// PrometheusTimer implements Timer interface for Prometheus
+type PrometheusTimer struct {
+	histogram prometheus.Observer
+	start     time.Time
+}
+
+func (pt *PrometheusTimer) Stop() time.Duration {
+	duration := time.Since(pt.start)
+	pt.histogram.Observe(duration.Seconds())
+	return duration
+}
+
+func (pt *PrometheusTimer) Elapsed() time.Duration {
+	return time.Since(pt.start)
 }
 
 // NewPrometheusCollector creates a new Prometheus metrics collector
@@ -63,6 +79,295 @@ func NewPrometheusCollector(namespace string, registry prometheus.Registerer) *P
 	pc.initDatabaseSpecificMetrics()
 
 	return pc
+}
+
+// Implement MetricsCollector interface
+
+func (pc *PrometheusCollector) IncrementCounter(name string, labels map[string]string) {
+	pc.IncrementCounterBy(name, 1, labels)
+}
+
+func (pc *PrometheusCollector) IncrementCounterBy(name string, value float64, labels map[string]string) {
+	pc.metricsLock.Lock()
+	defer pc.metricsLock.Unlock()
+
+	counter, exists := pc.customCounters[name]
+	if !exists {
+		labelNames := make([]string, 0, len(labels))
+		for k := range labels {
+			labelNames = append(labelNames, k)
+		}
+
+		counter = promauto.With(pc.registry).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: pc.namespace,
+				Name:      name,
+				Help:      fmt.Sprintf("Counter metric: %s", name),
+			},
+			labelNames,
+		)
+		pc.customCounters[name] = counter
+	}
+
+	labelValues := make([]string, 0, len(labels))
+	for _, v := range labels {
+		labelValues = append(labelValues, v)
+	}
+
+	counter.WithLabelValues(labelValues...).Add(value)
+}
+
+func (pc *PrometheusCollector) SetGauge(name string, value float64, labels map[string]string) {
+	pc.metricsLock.Lock()
+	defer pc.metricsLock.Unlock()
+
+	gauge, exists := pc.customGauges[name]
+	if !exists {
+		labelNames := make([]string, 0, len(labels))
+		for k := range labels {
+			labelNames = append(labelNames, k)
+		}
+
+		gauge = promauto.With(pc.registry).NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: pc.namespace,
+				Name:      name,
+				Help:      fmt.Sprintf("Gauge metric: %s", name),
+			},
+			labelNames,
+		)
+		pc.customGauges[name] = gauge
+	}
+
+	labelValues := make([]string, 0, len(labels))
+	for _, v := range labels {
+		labelValues = append(labelValues, v)
+	}
+
+	gauge.WithLabelValues(labelValues...).Set(value)
+}
+
+func (pc *PrometheusCollector) IncrementGauge(name string, labels map[string]string) {
+	pc.metricsLock.Lock()
+	defer pc.metricsLock.Unlock()
+
+	gauge, exists := pc.customGauges[name]
+	if !exists {
+		labelNames := make([]string, 0, len(labels))
+		for k := range labels {
+			labelNames = append(labelNames, k)
+		}
+
+		gauge = promauto.With(pc.registry).NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: pc.namespace,
+				Name:      name,
+				Help:      fmt.Sprintf("Gauge metric: %s", name),
+			},
+			labelNames,
+		)
+		pc.customGauges[name] = gauge
+	}
+
+	labelValues := make([]string, 0, len(labels))
+	for _, v := range labels {
+		labelValues = append(labelValues, v)
+	}
+
+	gauge.WithLabelValues(labelValues...).Inc()
+}
+
+func (pc *PrometheusCollector) DecrementGauge(name string, labels map[string]string) {
+	pc.metricsLock.Lock()
+	defer pc.metricsLock.Unlock()
+
+	gauge, exists := pc.customGauges[name]
+	if !exists {
+		labelNames := make([]string, 0, len(labels))
+		for k := range labels {
+			labelNames = append(labelNames, k)
+		}
+
+		gauge = promauto.With(pc.registry).NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: pc.namespace,
+				Name:      name,
+				Help:      fmt.Sprintf("Gauge metric: %s", name),
+			},
+			labelNames,
+		)
+		pc.customGauges[name] = gauge
+	}
+
+	labelValues := make([]string, 0, len(labels))
+	for _, v := range labels {
+		labelValues = append(labelValues, v)
+	}
+
+	gauge.WithLabelValues(labelValues...).Dec()
+}
+
+func (pc *PrometheusCollector) RecordHistogram(name string, value float64, labels map[string]string) {
+	pc.metricsLock.Lock()
+	defer pc.metricsLock.Unlock()
+
+	histogram, exists := pc.customHistograms[name]
+	if !exists {
+		labelNames := make([]string, 0, len(labels))
+		for k := range labels {
+			labelNames = append(labelNames, k)
+		}
+
+		histogram = promauto.With(pc.registry).NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: pc.namespace,
+				Name:      name,
+				Help:      fmt.Sprintf("Histogram metric: %s", name),
+				Buckets:   prometheus.DefBuckets,
+			},
+			labelNames,
+		)
+		pc.customHistograms[name] = histogram
+	}
+
+	labelValues := make([]string, 0, len(labels))
+	for _, v := range labels {
+		labelValues = append(labelValues, v)
+	}
+
+	histogram.WithLabelValues(labelValues...).Observe(value)
+}
+
+func (pc *PrometheusCollector) RecordDuration(name string, duration time.Duration, labels map[string]string) {
+	pc.RecordHistogram(name, duration.Seconds(), labels)
+}
+
+func (pc *PrometheusCollector) StartTimer(name string, labels map[string]string) Timer {
+	pc.metricsLock.Lock()
+	defer pc.metricsLock.Unlock()
+
+	timer, exists := pc.customTimers[name]
+	if !exists {
+		labelNames := make([]string, 0, len(labels))
+		for k := range labels {
+			labelNames = append(labelNames, k)
+		}
+
+		timer = promauto.With(pc.registry).NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: pc.namespace,
+				Name:      name + "_duration_seconds",
+				Help:      fmt.Sprintf("Timer metric: %s", name),
+				Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+			},
+			labelNames,
+		)
+		pc.customTimers[name] = timer
+	}
+
+	labelValues := make([]string, 0, len(labels))
+	for _, v := range labels {
+		labelValues = append(labelValues, v)
+	}
+
+	return &PrometheusTimer{
+		histogram: timer.WithLabelValues(labelValues...),
+		start:     time.Now(),
+	}
+}
+
+func (pc *PrometheusCollector) RecordTimer(name string, labels map[string]string) func() {
+	timer := pc.StartTimer(name, labels)
+	return func() {
+		timer.Stop()
+	}
+}
+
+func (pc *PrometheusCollector) RegisterCustomMetric(name, help string, metricType MetricType, labelNames []string) error {
+	pc.metricsLock.Lock()
+	defer pc.metricsLock.Unlock()
+
+	switch metricType {
+	case MetricTypeCounter:
+		counter := promauto.With(pc.registry).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: pc.namespace,
+				Name:      name,
+				Help:      help,
+			},
+			labelNames,
+		)
+		pc.customCounters[name] = counter
+	case MetricTypeGauge:
+		gauge := promauto.With(pc.registry).NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: pc.namespace,
+				Name:      name,
+				Help:      help,
+			},
+			labelNames,
+		)
+		pc.customGauges[name] = gauge
+	case MetricTypeHistogram:
+		histogram := promauto.With(pc.registry).NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: pc.namespace,
+				Name:      name,
+				Help:      help,
+				Buckets:   prometheus.DefBuckets,
+			},
+			labelNames,
+		)
+		pc.customHistograms[name] = histogram
+	default:
+		return fmt.Errorf("unsupported metric type: %s", metricType)
+	}
+
+	return nil
+}
+
+func (pc *PrometheusCollector) RecordCustomMetric(name string, value float64, labels map[string]string) {
+	pc.metricsLock.RLock()
+	defer pc.metricsLock.RUnlock()
+
+	if counter, exists := pc.customCounters[name]; exists {
+		labelValues := make([]string, 0, len(labels))
+		for _, v := range labels {
+			labelValues = append(labelValues, v)
+		}
+		counter.WithLabelValues(labelValues...).Add(value)
+		return
+	}
+
+	if gauge, exists := pc.customGauges[name]; exists {
+		labelValues := make([]string, 0, len(labels))
+		for _, v := range labels {
+			labelValues = append(labelValues, v)
+		}
+		gauge.WithLabelValues(labelValues...).Set(value)
+		return
+	}
+
+	if histogram, exists := pc.customHistograms[name]; exists {
+		labelValues := make([]string, 0, len(labels))
+		for _, v := range labels {
+			labelValues = append(labelValues, v)
+		}
+		histogram.WithLabelValues(labelValues...).Observe(value)
+		return
+	}
+}
+
+func (pc *PrometheusCollector) Start(ctx context.Context) error {
+	return nil // Prometheus collectors don't need explicit starting
+}
+
+func (pc *PrometheusCollector) Stop(ctx context.Context) error {
+	return nil // Prometheus collectors don't need explicit stopping
+}
+
+func (pc *PrometheusCollector) Flush(ctx context.Context) error {
+	return nil // Prometheus handles flushing automatically
 }
 
 // initStandardMetrics initializes standard database metrics
@@ -713,5 +1018,8 @@ func (pc *PrometheusCollector) GetRegistry() prometheus.Registerer {
 
 // CreateDatabaseMetricsCollector creates a new DatabaseMetricsCollector with Prometheus backend
 func (pc *PrometheusCollector) CreateDatabaseMetricsCollector() *DatabaseMetricsCollector {
-	return NewDatabaseMetricsCollector(pc)
+	// Create a metrics manager with this prometheus collector
+	manager := NewMetricsManager(nil)
+	manager.RegisterCollector("prometheus", pc)
+	return NewDatabaseMetricsCollector(manager)
 }

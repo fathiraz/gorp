@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-gorp/gorp/v3/db"
+	"github.com/fathiraz/gorp/db"
 	_ "github.com/mattn/go-sqlite3" // SQLite driver for testing
 )
 
